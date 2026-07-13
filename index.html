@@ -226,6 +226,7 @@
   }
 
   // Розумний парсер з автоматичним визначенням роздільника (кома чи крапка з комою)
+// Розумний парсер з автоматичним визначенням роздільника та гнучким пошуком заголовків
   function parseCSV(text) {
     const lines = text.split('\n');
     if (lines.length === 0) return [];
@@ -244,53 +245,102 @@
     if (cell.length || row.length) { row.push(cell); rows.push(row); }
     if (rows.length < 2) return [];
 
+    // Приводимо всі заголовки до нижнього регістру для точного порівняння
     const head = rows[0].map(h => h.trim().toLowerCase());
-    const col = (...names) => { for (const n of names) { const i = head.findIndex(h => h.includes(n)); if (i >= 0) return i; } return -1; };
+    const col = (...names) => { 
+      for (const n of names) { 
+        const i = head.findIndex(h => h.includes(n.toLowerCase())); 
+        if (i >= 0) return i; 
+      } 
+      return -1; 
+    };
     
+    // Розширений мапінг заголовків (шукає будь-які згадки або скорочення)
     const ci = {
-      name: col('суб', 'назва клієнт', 'назва', 'покупець', 'компан'),
-      contact: col('покупець', 'контакт', 'власник'), phone: col('телефон', 'тел'),
-      clientType: col('тип клієнт'), leadSource: col('джерело'),
-      settlement: col('населен'), region: col('регіон', 'област'), district: col('район'),
-      address: col('адрес'), power: col('потужн'), type: col('тип станц', 'тип сес'),
-      sale: col('дата прод', 'продаж'), inst: col('дата монтаж', 'монтаж'),
-      reg: col('регіональн'), sales: col('менеджер прод', 'менеджер з продаж'),
-      status: col('статус проєкт', 'статус проект', 'статус сес'), sum: col('сума'), notes: col('приміт'),
-      base: col('база', 'шар'), temp: col('темпер', 'лід тип', 'тип ліда'),
-      crm: col('crm', 'посилан'), overdue: col('прострочен', 'задач'),
-      lat: col('широт', 'lat'), lon: col('довгот', 'lon', 'lng')
+      name: col('суб', 'назва', 'покупець', 'компан', 'клієнт', 'фіо'),
+      contact: col('контакт', 'власник', 'особа', 'піб'), 
+      phone: col('телефон', 'тел', 'номер'),
+      clientType: col('тип клієнт', 'тип', 'категор'), 
+      leadSource: col('джерело', 'звідки', 'source'),
+      settlement: col('населен', 'пункт', 'місто', 'село', 'смт'), 
+      region: col('област', 'регіон', 'обл'), 
+      district: col('район', 'р-н'),
+      address: col('адрес', 'вулиця'), 
+      power: col('потужн', 'квт', 'power', 'w'), 
+      type: col('тип станц', 'тип сес', 'вид станц'),
+      sale: col('дата прод', 'продаж', 'договір'), 
+      inst: col('дата монтаж', 'монтаж', 'введен'),
+      reg: col('регіональн', 'рег', 'рм'), 
+      sales: col('менеджер прод', 'менеджер з продаж', 'менеджер', 'відповідальн'),
+      status: col('статус проєкт', 'статус проект', 'статус сес', 'статус', 'етап'), 
+      sum: col('сума', 'вартість', 'ціна'), 
+      notes: col('приміт', 'комент', 'інфо'),
+      base: col('база', 'шар', 'тип об', 'карта'), 
+      temp: col('темпер', 'лід тип', 'тип ліда', 'теплий', 'холодний', 'маркер'),
+      crm: col('crm', 'посилан', 'лінк', 'link'), 
+      overdue: col('прострочен', 'задач', 'увага', 'task'),
+      lat: col('широт', 'lat', 'y'), 
+      lon: col('довгот', 'lon', 'lng', 'x')
     };
 
     const out = [];
     for (let r = 1; r < rows.length; r++) {
-      const c = rows[r]; if (!c || !c[ci.name]) continue;
-      const baseVal = (ci.base >= 0 ? c[ci.base] : '').toLowerCase();
-      const tempVal = (ci.temp >= 0 ? c[ci.temp] : '').toLowerCase();
-      const isLead = baseVal.includes('потенц') || baseVal.includes('лід') || tempVal.includes('хол') || tempVal.includes('тепл') || tempVal.includes('необроб');
-      let leadTemp = 'raw';
-      if (isLead) leadTemp = tempVal.includes('тепл') ? 'warm' : tempVal.includes('хол') ? 'cold' : 'raw';
+      const c = rows[r]; 
+      // Якщо рядок порожній або немає назви — пропускаємо
+      if (!c || c.length === 0 || (ci.name >= 0 && !c[ci.name])) continue;
       
-      const overdueVal = ci.overdue >= 0 ? c[ci.overdue].toLowerCase() : '';
-      const isOverdue = overdueVal === 'так' || overdueVal === '1' || overdueVal === '+';
+      const baseVal = (ci.base >= 0 && c[ci.base]) ? c[ci.base].toLowerCase() : '';
+      const tempVal = (ci.temp >= 0 && c[ci.temp]) ? c[ci.temp].toLowerCase() : '';
+      
+      // Логіка визначення Реалізований / Потенційний (Лід)
+      const isLead = baseVal.includes('потенц') || baseVal.includes('лід') || 
+                     tempVal.includes('хол') || tempVal.includes('тепл') || tempVal.includes('необроб') ||
+                     (ci.status >= 0 && String(c[ci.status]).toLowerCase().includes('лід'));
+                     
+      let leadTemp = 'raw';
+      if (isLead) {
+        if (tempVal.includes('тепл') || tempVal.includes('warm')) leadTemp = 'warm';
+        else if (tempVal.includes('хол') || tempVal.includes('cold')) leadTemp = 'cold';
+        else leadTemp = 'raw';
+      }
+      
+      const overdueVal = (ci.overdue >= 0 && c[ci.overdue]) ? c[ci.overdue].toLowerCase() : '';
+      const isOverdue = overdueVal === 'так' || overdueVal === '1' || overdueVal === '+' || overdueVal.includes('прос');
+
+      // Функція безпечного витягування тексту зі стовпчика
+      const txt = (idx) => (idx >= 0 && c[idx]) ? c[idx].trim() : '';
 
       out.push({
         id: (isLead ? 'L' : 'R') + r,
-        kind: isLead ? 'lead' : 'realized', leadTemp,
-        name: c[ci.name] || '', contact: ci.contact >= 0 ? c[ci.contact] : '—',
-        phone: ci.phone >= 0 ? c[ci.phone] : '', settlement: ci.settlement >= 0 ? c[ci.settlement] : '',
-        region: ci.region >= 0 ? c[ci.region] : '', district: ci.district >= 0 ? c[ci.district] : '',
-        clientType: ci.clientType >= 0 ? c[ci.clientType] : '', leadSource: ci.leadSource >= 0 ? c[ci.leadSource] : '',
-        address: ci.address >= 0 ? c[ci.address] : '', powerKw: parseFloat((ci.power >= 0 ? c[ci.power] : '0').replace(/[^\d.]/g, '')) || 0,
-        stationType: ci.type >= 0 ? c[ci.type] : '', saleDate: ci.sale >= 0 ? c[ci.sale] : '',
-        installDate: ci.inst >= 0 ? c[ci.inst] : '', regionalManager: ci.reg >= 0 ? c[ci.reg] : '',
-        salesManager: ci.sales >= 0 ? c[ci.sales] : '', status: ci.status >= 0 ? c[ci.status] : (isLead ? 'Лід' : 'Реалізовано'),
-        contractSum: parseFloat((ci.sum >= 0 ? c[ci.sum] : '0').replace(/[^\d.]/g, '')) || 0,
-        notes: ci.notes >= 0 ? c[ci.notes] : '', crmLink: ci.crm >= 0 ? c[ci.crm] : '', isOverdue,
+        kind: isLead ? 'lead' : 'realized', 
+        leadTemp,
+        name: txt(ci.name) || `Об'єкт №${r}`, 
+        contact: txt(ci.contact) || '—',
+        phone: txt(ci.phone), 
+        settlement: txt(ci.settlement),
+        region: txt(ci.region), 
+        district: txt(ci.district),
+        clientType: txt(ci.clientType), 
+        leadSource: txt(ci.leadSource),
+        address: txt(ci.address), 
+        powerKw: parseFloat((txt(ci.power) || '0').replace(/[^\d.]/g, '').replace(',', '.')) || 0,
+        stationType: txt(ci.type), 
+        saleDate: txt(ci.sale),
+        installDate: txt(ci.inst), 
+        regionalManager: txt(ci.reg),
+        salesManager: txt(ci.sales), 
+        status: txt(ci.status) || (isLead ? 'Лід' : 'Реалізовано'),
+        contractSum: parseFloat((txt(ci.sum) || '0').replace(/[^\d.]/g, '').replace(',', '.')) || 0,
+        notes: txt(ci.notes), 
+        crmLink: txt(ci.crm), 
+        isOverdue,
         lat: ci.lat >= 0 ? parseFloat(String(c[ci.lat]).replace(',', '.')) : null,
         lon: ci.lon >= 0 ? parseFloat(String(c[ci.lon]).replace(',', '.')) : null
       });
     }
-    return out.filter(o => o.lat && o.lon);
+    
+    // Фільтруємо лише ті об'єкти, які мають координати, щоб вони не ламали карту
+    return out.filter(o => o.lat && !isNaN(o.lat) && o.lon && !isNaN(o.lon));
   }
 
   function getUniqVals(key) {
